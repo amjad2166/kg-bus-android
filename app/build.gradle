@@ -1,0 +1,61 @@
+plugins {
+    id 'com.android.application'
+}
+
+def cfg = new Properties()
+rootProject.file('app-config.properties').withReader('UTF-8') { cfg.load(it) }
+def host = cfg.getProperty('SITE_HOST').trim()
+def startPath = cfg.getProperty('START_PATH', '/').trim()
+if (!startPath.startsWith('/')) startPath = '/' + startPath
+def appName = cfg.getProperty('APP_NAME').trim()
+def assetStatements = '[{\\"relation\\": [\\"delegate_permission/common.handle_all_urls\\"], \\"target\\": {\\"namespace\\": \\"web\\", \\"site\\": \\"https://' + host + '\\"}}]'
+
+android {
+    namespace 'com.kgbus.twa'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId cfg.getProperty('PACKAGE_ID').trim()
+        minSdk 21
+        targetSdk 34
+        versionCode((System.getenv('VERSION_CODE') ?: '1') as int)
+        versionName cfg.getProperty('VERSION_NAME', '1.0').trim()
+
+        manifestPlaceholders = [
+            hostName  : host,
+            defaultUrl: 'https://' + host + startPath + 'index.php?source=android'
+        ]
+        resValue 'string', 'appName', appName
+        resValue 'string', 'asset_statements', assetStatements
+    }
+
+    signingConfigs {
+        release {
+            storeFile file(System.getenv('KEYSTORE_PATH') ?: 'missing.keystore')
+            storePassword System.getenv('KEYSTORE_PASSWORD') ?: ''
+            keyAlias System.getenv('KEY_ALIAS') ?: 'kgbus'
+            keyPassword System.getenv('KEYSTORE_PASSWORD') ?: ''
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    lint {
+        checkReleaseBuilds false
+        abortOnError false
+    }
+}
+
+dependencies {
+    implementation 'com.google.androidbrowserhelper:androidbrowserhelper:2.5.0'
+}
