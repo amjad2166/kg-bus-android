@@ -1,0 +1,88 @@
+name: بناء تطبيق أندرويد (APK)
+
+on:
+  push:
+    branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: التحقق من الإعدادات
+        run: |
+          HOST=$(grep '^SITE_HOST=' app-config.properties | cut -d= -f2 | tr -d '[:space:]')
+          if [ -z "$HOST" ] || [ "$HOST" = "kg.example.com" ]; then
+            echo "::error::عدّل SITE_HOST في ملف app-config.properties إلى نطاق موقع الروضة ثم احفظ."
+            exit 1
+          fi
+          echo "SITE_HOST=$HOST" >> $GITHUB_ENV
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - uses: gradle/actions/setup-gradle@v3
+        with:
+          gradle-version: '8.5'
+
+      - name: تجهيز مفتاح التوقيع
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ]; then
+            echo "$KEYSTORE_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            echo "KEYSTORE_PASSWORD=$KEYSTORE_PASS" >> $GITHUB_ENV
+            echo "TEMP_KEY=0" >> $GITHUB_ENV
+          else
+            echo "::warning::لم يُضف مفتاح التوقيع في Secrets — سيُستخدم مفتاح مؤقت. أضف المفتاح الدائم قبل توزيع التطبيق على الأهالي."
+            PASS=temp-$(date +%s)
+            keytool -genkeypair -keystore "$RUNNER_TEMP/release.keystore" -alias kgbus -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass "$PASS" -keypass "$PASS" -dname "CN=Temporary" -noprompt
+            echo "KEYSTORE_PASSWORD=$PASS" >> $GITHUB_ENV
+            echo "TEMP_KEY=1" >> $GITHUB_ENV
+          fi
+          echo "KEYSTORE_PATH=$RUNNER_TEMP/release.keystore" >> $GITHUB_ENV
+
+      - name: بناء التطبيق
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+        run: gradle --no-daemon assembleRelease
+
+      - name: تجهيز الملفات
+        run: |
+          mkdir -p out
+          cp app/build/outputs/apk/release/app-release.apk out/kg-bus.apk
+          PKG=$(grep '^PACKAGE_ID=' app-config.properties | cut -d= -f2 | tr -d '[:space:]')
+          FP=$(keytool -list -v -keystore "$KEYSTORE_PATH" -storepass "$KEYSTORE_PASSWORD" -alias kgbus | grep 'SHA256:' | head -1 | awk '{print $2}')
+          cat > out/assetlinks.json <<JSON
+          [{"relation":["delegate_permission/common.handle_all_urls"],"target":{"namespace":"android_app","package_name":"$PKG","sha256_cert_fingerprints":["$FP"]}}]
+          JSON
+          echo "FINGERPRINT=$FP" >> $GITHUB_ENV
+          ls -la out
+
+      - name: نشر الإصدار
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v${{ github.run_number }}
+          name: تطبيق أندرويد — إصدار ${{ github.run_number }}
+          make_latest: true
+          files: |
+            out/kg-bus.apk
+            out/assetlinks.json
+          body: |
+            رابط التحميل الثابت (دائمًا آخر إصدار):
+            https://github.com/${{ github.repository }}/releases/latest/download/kg-bus.apk
+
+            الموقع: https://${{ env.SITE_HOST }}
+            بصمة التوقيع: `${{ env.FINGERPRINT }}`
+            ${{ env.TEMP_KEY == '1' && '⚠️ هذا الإصدار موقّع بمفتاح مؤقت للتجربة فقط.' || '' }}
+
+            ضع ملف assetlinks.json على الموقع في المسار: https://${{ env.SITE_HOST }}/.well-known/assetlinks.json
